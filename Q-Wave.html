@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Atomic Orbitals Visualization</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #333333; /* Dark gray background */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #f0f0f0;
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+        }
+        #gui-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background-color: rgba(40, 40, 40, 0.85);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        #gui-container label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 16px;
+        }
+        #gui-container select {
+            width: 100%;
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #555;
+            background-color: #444;
+            color: #f0f0f0;
+            font-size: 14px;
+        }
+        #gui-container select:focus {
+            outline: none;
+            border-color: #00aaff;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="gui-container">
+        <label for="orbitalSelector">Select Orbital:</label>
+        <select id="orbitalSelector">
+            <option value="1s_H">1s H (1,0,0)</option>
+            <option value="2s_H">2s H (2,0,0)</option>
+            <option value="2p_H_z">2pz H (2,1,0)</option>
+            <option value="3p_H_z">3pz H (3,1,0)</option>
+            <option value="3d_Fe_z2">3dz² Fe (3,2,0)</option>
+        </select>
+    </div>
+
+    <!-- 1. REMOVE the old global Three.js script -->
+    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script> -->
+    
+    <!-- 2. ADD the import map -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.128.0/build/three.module.js"
+        }
+    }
+    </script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.7/dat.gui.min.js"></script>
+    <!-- The commented-out OrbitControls script can remain as is or be removed if not needed -->
+    <!-- <script src="https://threejs.org/examples/js/controls/OrbitControls.js"></script> -->
+
+    <script type="module">
+        // 3. IMPORT THREE as a module
+        import * as THREE from 'three'; 
+        import { OrbitControls } from 'https://unpkg.com/three@0.128.0/examples/jsm/controls/OrbitControls.js';
+
+        let scene, camera, renderer, controls;
+        const orbitalGroups = {}; 
+        let currentOrbital = '1s_H'; // Default orbital
+        const particleData = {}; 
+
+        const particleCount = 75000; 
+        const particleSize = 0.025; 
+
+        // Shader definitions
+        const vertexShader = `
+            // Attributes from THREE.SphereGeometry
+            // attribute vec3 position; // REMOVE/COMMENT OUT - Provided by Three.js
+            // attribute vec3 normal;   // REMOVE/COMMENT OUT - Provided by Three.js
+            // attribute vec2 uv; // You can declare this if you plan to use UVs
+
+            // Attributes from THREE.InstancedMesh
+            // attribute mat4 instanceMatrix; // REMOVE/COMMENT OUT - Provided by Three.js if USE_INSTANCING is defined
+
+            // Custom attributes per instance
+            attribute float a_initialPhase;    // Per-instance initial rotation phase - KEEP THIS
+
+            // Uniforms
+            // uniform mat4 projectionMatrix; // REMOVE/COMMENT OUT - Provided by Three.js
+            // uniform mat4 viewMatrix;       // REMOVE/COMMENT OUT - Provided by Three.js
+            // uniform mat4 modelMatrix;      // REMOVE/COMMENT OUT - Provided by Three.js
+
+            uniform float orbitalScale;             // KEEP THIS
+            uniform float u_time;                   // KEEP THIS
+            uniform float u_maxSpeedAtCenter;       // KEEP THIS
+            uniform float u_minSpeedAtEdge;         // KEEP THIS
+            uniform float u_exponentialFalloffRate; // KEEP THIS
+
+            varying vec3 vWorldPosition;
+            varying vec3 vNormalWorld;
+            varying float vDepthFactor;
+
+            void main() {
+                // Extract the original position from the instanceMatrix (translation part)
+                // instanceMatrix is set once with the particle's initial static position.
+                vec3 original_pos = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+
+                // Calculate dynamic rotation for this instance based on its original_pos
+                float distanceToYAxis = length(original_pos.xz); // Distance from Y-axis in the XZ plane
+                float angularSpeed = (u_maxSpeedAtCenter - u_minSpeedAtEdge) * exp(-distanceToYAxis * u_exponentialFalloffRate) + u_minSpeedAtEdge;
+                float currentRotationY = a_initialPhase + angularSpeed * u_time;
+
+                // Create rotation matrix around Y axis for the particle's position
+                float s = sin(currentRotationY);
+                float c = cos(currentRotationY);
+                mat4 rotationAnimMatrix = mat4(
+                    c, 0, s, 0,
+                    0, 1, 0, 0,
+                    -s, 0, c, 0,
+                    0, 0, 0, 1
+                );
+
+                // Calculate the new animated center of the instance in the InstancedMesh's local space
+                vec3 animated_instance_center_object_space = (rotationAnimMatrix * vec4(original_pos, 1.0)).xyz;
+                
+                // Create a translation matrix to this new animated center
+                mat4 translationToAnimatedCenter = mat4(
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                    animated_instance_center_object_space.x, animated_instance_center_object_space.y, animated_instance_center_object_space.z, 1.0
+                );
+
+                // Transform the local vertex of the sphere ('position') to its animated spot, then to world, then to view/projection
+                vec4 worldPosition = modelMatrix * translationToAnimatedCenter * vec4(position, 1.0);
+                vWorldPosition = worldPosition.xyz;
+                
+                // Normals are transformed by the model matrix (overall orbital rotation)
+                // The individual particle spin doesn't reorient the sphere's normals in this simplified model
+                vNormalWorld = normalize(mat3(modelMatrix) * normal);
+
+                vec4 viewPosition = viewMatrix * worldPosition; 
+                float rawDepth = -viewPosition.z; 
+                
+                vDepthFactor = smoothstep(orbitalScale * 0.45, orbitalScale * 2.8, rawDepth); 
+
+                gl_Position = projectionMatrix * viewPosition;
+            }
+        `;
+
+        const fragmentShader = `
+            uniform vec3 baseColor;
+            uniform vec3 ambientLightColor;
+            uniform vec3 directionalLightColor1;
+            uniform vec3 directionalLightDirection1; // Should be normalized
+            uniform vec3 directionalLightColor2;
+            uniform vec3 directionalLightDirection2; // Should be normalized
+
+            varying vec3 vWorldPosition;
+            varying vec3 vNormalWorld;
+            varying float vDepthFactor; // 0 (close, bright) to 1 (far, dark)
+
+            // Define min/max brightness values
+            const float minOverallBrightness = 0.12; // Increased minimum brightness
+            const float maxOverallBrightness = 0.98; // Increased maximum brightness
+            const float minRawLight = 0.08;         // Increased minimum raw light
+            const float maxRawLight = 1.9;          // Increased maximum raw light
+
+            void main() {
+                vec3 N = normalize(vNormalWorld);
+
+                // Lighting Calc for Light 1
+                vec3 L1 = normalize(directionalLightDirection1);
+                float lambertian1 = max(dot(N, L1), 0.0);
+                vec3 diffuse1 = directionalLightColor1 * lambertian1;
+
+                // Lighting Calc for Light 2
+                vec3 L2 = normalize(directionalLightDirection2);
+                float lambertian2 = max(dot(N, L2), 0.0);
+                vec3 diffuse2 = directionalLightColor2 * lambertian2;
+
+                vec3 rawLighting = ambientLightColor + diffuse1 + diffuse2;
+                // Clamp the raw lighting contribution
+                rawLighting = clamp(rawLighting, vec3(minRawLight), vec3(maxRawLight));
+                
+                vec3 litColor = baseColor * rawLighting;
+
+                // Apply depth darkening
+                vec3 darkColorMultiplier = vec3(0.25, 0.25, 0.25); 
+                vec3 finalColor = mix(litColor, litColor * darkColorMultiplier, vDepthFactor);
+
+                // Clamp the final color to ensure it's within overall brightness limits
+                finalColor = clamp(finalColor, vec3(minOverallBrightness), vec3(maxOverallBrightness));
+
+                gl_FragColor = vec4(finalColor, 1.0);
+            }
+        `;
+
+
+        const orbitalParams = {
+            '1s_H': {
+                name: "1s H (1,0,0) - Simple sphere",
+                color: 0x00FF7F, // Spring Green
+                scale: 4.0, 
+                generatePoints: generate1sPoints,
+                cameraPosition: new THREE.Vector3(5, 5, 8) // Current position works well for 1s
+            },
+            '2s_H': {
+                name: "2s H (2,0,0) - Sphere with radial node",
+                color: 0x87CEEB, // Sky Blue
+                scale: 5.0, // 2s is generally larger than 1s
+                generatePoints: generate2sPoints,
+                cameraPosition: new THREE.Vector3(7, 7, 11) // Further away for 2s
+            },
+            '2p_H_z': {
+                name: "2pz H (2,1,0) - Dumbbell",
+                color: 0xFFC0CB, // Pink
+                scale: 5.0, 
+                generatePoints: generate2pzPoints,
+                cameraPosition: new THREE.Vector3(7, 7, 11) // Further away for 2p
+            },
+            '3p_H_z': {
+                name: "3pz H (3,1,0) - Larger dumbbell with radial node",
+                color: 0xFF9966, // Peach
+                scale: 6.0,
+                generatePoints: generate3pzPoints,
+                cameraPosition: new THREE.Vector3(9, 9, 14) // Even further for 3p
+            },
+            '3d_Fe_z2': {
+                name: "3dz² Fe (3,2,0) - Larger dumbbell with radial node",
+                color: 0xFFFF00, // Yellow
+                scale: 6.5, // d-orbitals are generally larger
+                generatePoints: generate3dz2Points,
+                cameraPosition: new THREE.Vector3(10, 10, 15) // Furthest for 3d
+            }
+        };
+
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+
+            // Camera - adjust position to be further away
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(5, 5, 8); // Moved further away (was 2, 2, 3)
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setClearColor(0x333333); // Dark gray background
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.9); 
+            scene.add(ambientLight);
+            
+            const directionalLight1 = new THREE.DirectionalLight(0xffffff, 0.5); 
+            directionalLight1.position.set(5, 10, 7.5);
+            scene.add(directionalLight1);
+
+            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.3); 
+            directionalLight2.position.set(-5, -5, -7.5); 
+            scene.add(directionalLight2);
+
+            // Store light info for shaders
+            scene.userData.ambientLightColor = ambientLight.color.clone();
+            scene.userData.directionalLight1 = { 
+                color: directionalLight1.color.clone(), 
+                direction: directionalLight1.position.clone().normalize() // Direction from origin to light
+            };
+            scene.userData.directionalLight2 = {
+                color: directionalLight2.color.clone(),
+                direction: directionalLight2.position.clone().normalize()
+            };
+
+
+            // Controls
+            controls = new OrbitControls(camera, renderer.domElement); // Changed from THREE.OrbitControls
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            // Nucleus
+            const nucleusGeometry = new THREE.SphereGeometry(0.1, 32, 32);
+            const nucleusMaterial = new THREE.MeshStandardMaterial({ color: 0xFFFFE0, emissive: 0x333300 });
+            const nucleus = new THREE.Mesh(nucleusGeometry, nucleusMaterial); // Renamed to avoid conflict
+            nucleus.visible = false; 
+            scene.add(nucleus);
+
+            // Create orbital particle systems
+            for (const type in orbitalParams) {
+                orbitalGroups[type] = createOrbital(type); // This will now return an InstancedMesh
+                scene.add(orbitalGroups[type]);
+            }
+
+            // UI
+            const orbitalSelector = document.getElementById('orbitalSelector');
+            orbitalSelector.addEventListener('change', (event) => {
+                switchOrbital(event.target.value);
+            });
+            orbitalSelector.value = currentOrbital; // Ensure dropdown matches initial state
+            switchOrbital(currentOrbital); // Initialize with the default orbital
+
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize, false);
+
+            // Define the animate function before calling it
+            let animate = function() {
+                requestAnimationFrame(animate);
+                
+                // Update uniforms for all orbital materials
+                const time = performance.now() * 0.001; // Convert to seconds
+                for (const type in orbitalGroups) {
+                    if (orbitalGroups[type].material && orbitalGroups[type].material.uniforms) {
+                        orbitalGroups[type].material.uniforms.u_time.value = time;
+                        orbitalGroups[type].material.uniforms.viewMatrix.value = camera.matrixWorldInverse;
+                    }
+                }
+                
+                controls.update();
+                renderer.render(scene, camera);
+            };
+            
+            animate();
+        }
+
+        function switchOrbital(orbitalType) {
+            // Hide all orbitals first
+            for (const type in orbitalGroups) {
+                orbitalGroups[type].visible = false;
+            }
+            
+            // Show only the selected orbital
+            if (orbitalGroups[orbitalType]) {
+                orbitalGroups[orbitalType].visible = true;
+                currentOrbital = orbitalType;
+                
+                // Update camera position based on the selected orbital
+                if (orbitalParams[orbitalType].cameraPosition) {
+                    const targetPos = orbitalParams[orbitalType].cameraPosition;
+                    // Smoothly animate to the new position
+                    const startPos = camera.position.clone();
+                    const duration = 1000; // 1 second
+                    const startTime = performance.now();
+                    
+                    function updateCameraPosition() {
+                        const elapsed = performance.now() - startTime;
+                        const progress = Math.min(elapsed / duration, 1);
+                        // Use easing function for smoother transition
+                        const easeProgress = 1 - Math.pow(1 - progress, 3); // Cubic ease-out
+                        
+                        camera.position.lerpVectors(startPos, targetPos, easeProgress);
+                        
+                        if (progress < 1) {
+                            requestAnimationFrame(updateCameraPosition);
+                        }
+                    }
+                    
+                    updateCameraPosition();
+                }
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function createOrbital(type) {
+            const params = orbitalParams[type];
+            if (!params.generatePoints) {
+                console.error(`generatePoints function is missing for orbital type: ${type}`);
+                return new THREE.Group(); // Return an empty group or handle error appropriately
+            }
+            
+            const shaderUniforms = {
+                baseColor: { value: new THREE.Color(params.color) },
+                orbitalScale: { value: params.scale },
+                ambientLightColor: { value: scene.userData.ambientLightColor },
+                directionalLightColor1: { value: scene.userData.directionalLight1.color },
+                directionalLightDirection1: { value: scene.userData.directionalLight1.direction },
+                directionalLightColor2: { value: scene.userData.directionalLight2.color },
+                directionalLightDirection2: { value: scene.userData.directionalLight2.direction },
+                viewMatrix: { value: camera.matrixWorldInverse }, // Initial value
+                u_time: { value: 0.0 },
+                u_maxSpeedAtCenter: { value: 50.0 }, // Value from previous JS
+                u_minSpeedAtEdge: { value: 0.01 },    // Value from previous JS
+                u_exponentialFalloffRate: { value: 2.6 } // Value from previous JS
+            };
+
+            const material = new THREE.ShaderMaterial({
+                uniforms: shaderUniforms,
+                vertexShader: vertexShader,
+                fragmentShader: fragmentShader,
+            });
+            
+            const geometry = new THREE.SphereGeometry(particleSize, 5, 5); 
+
+            const instancedMesh = new THREE.InstancedMesh(geometry, material, particleCount);
+            // instanceMatrix will store the initial static position of each particle
+            // It's not dynamic per frame anymore for the Y-axis spin.
+            instancedMesh.instanceMatrix.setUsage(THREE.StaticDrawUsage); 
+
+
+            const generatedPoints = params.generatePoints(particleCount, params.scale);
+            particleData[type] = []; 
+
+            const initialPhases = new Float32Array(particleCount); // For a_initialPhase attribute
+
+            const matrix = new THREE.Matrix4();
+            for (let i = 0; i < particleCount; i++) {
+                const point = generatedPoints[i] || new THREE.Vector3(); 
+
+                matrix.setPosition(point);
+                instancedMesh.setMatrixAt(i, matrix);
+
+                const randomPhase = Math.random() * Math.PI * 2;
+                initialPhases[i] = randomPhase;
+
+                particleData[type][i] = {
+                    originalPosition: point.clone(), // Still useful for potential other effects or debugging
+                    initialPhase: randomPhase // Store for reference if needed
+                };
+            }
+            instancedMesh.geometry.setAttribute('a_initialPhase', new THREE.InstancedBufferAttribute(initialPhases, 1));
+            instancedMesh.instanceMatrix.needsUpdate = true; // Update once after setting all initial matrices
+            return instancedMesh;
+        }
+
+        // Point generation for 1s orbital (spherical) - Serves as 1s_H
+        function generate1sPoints(count, scale) {
+            const points = [];
+            // 1s orbital - spherically symmetric
+            for (let i = 0; i < count; i++) {
+                // Use rejection sampling for proper 1s distribution
+                let r, prob;
+                do {
+                    r = scale * Math.random(); // Random radius up to scale
+                    // 1s probability density ~ r^2 * e^(-2r)
+                    const rScaled = r / (scale/4);
+                    prob = rScaled * rScaled * Math.exp(-2 * rScaled);
+                } while (Math.random() * 0.5 > prob); // Stricter rejection sampling
+                
+                // Uniform distribution on sphere
+                const theta = Math.acos(2 * Math.random() - 1);
+                const phi = Math.random() * Math.PI * 2;
+                
+                // Convert to Cartesian coordinates
+                const x = r * Math.sin(theta) * Math.cos(phi);
+                const y = r * Math.sin(theta) * Math.sin(phi);
+                const z = r * Math.cos(theta);
+                
+                points.push(new THREE.Vector3(x, y, z));
+            }
+            return points;
+        }
+
+        // Point generation for 2s Orbital (Spherical with one radial node)
+        function generate2sPoints(count, scale) {
+            const points = [];
+            // 2s orbital - spherical with radial node at r = 2*a0
+            for (let i = 0; i < count; i++) {
+                // Use rejection sampling for proper 2s distribution
+                let r, prob;
+                do {
+                    r = scale * 1.5 * Math.random(); // Larger radius for 2s
+                    // 2s probability density ~ r^2 * (2-r/a0)^2 * e^(-r/a0)
+                    const rScaled = r / (scale/4);
+                    
+                    // This creates a more pronounced node
+                    const nodeTerm = Math.pow(2 - rScaled/2, 2);
+                    
+                    // If we're near the node, drastically reduce probability
+                    const nodeEffect = Math.abs(rScaled/2 - 2) < 0.3 ? 0.05 : 1.0;
+                    
+                    prob = rScaled * rScaled * nodeTerm * Math.exp(-rScaled/2) * nodeEffect;
+                } while (Math.random() * 2.0 > prob); // Stricter rejection
+                
+                // Uniform distribution on sphere
+                const theta = Math.acos(2 * Math.random() - 1);
+                const phi = Math.random() * Math.PI * 2;
+                
+                const x = r * Math.sin(theta) * Math.cos(phi);
+                const y = r * Math.sin(theta) * Math.sin(phi);
+                const z = r * Math.cos(theta);
+                
+                points.push(new THREE.Vector3(x, y, z));
+            }
+            return points;
+        }
+
+       // Point generation for 2pz orbital (dumbbell shape) - Serves as 2p_H_z
+        function generate2pzPoints(count, scale) {
+            const points = [];
+            // 2pz orbital - dumbbell shape along z-axis
+            for (let i = 0; i < count; i++) {
+                // Use rejection sampling for 2pz distribution
+                let r, theta, prob;
+                do {
+                    r = scale * 1.2 * Math.random(); // Radius
+                    theta = Math.acos(2 * Math.random() - 1); // Angle from z-axis
+                    
+                    // 2pz probability ~ r^2 * e^(-r/a0) * cos^2(theta)
+                    const rScaled = r / (scale/4);
+                    
+                    // Enhance the angular dependence to create a more pronounced dumbbell
+                    const angularTerm = Math.pow(Math.cos(theta), 4); // Use cos^4 instead of cos^2
+                    
+                    // Create a nodal plane at xy (theta = PI/2)
+                    const nodalPlaneEffect = Math.abs(Math.cos(theta)) < 0.2 ? 0.01 : 1.0;
+                    
+                    prob = rScaled * rScaled * Math.exp(-rScaled) * angularTerm * nodalPlaneEffect;
+                } while (Math.random() * 0.3 > prob); // Stricter rejection
+                
+                const phi = Math.random() * Math.PI * 2;
+                
+                const x = r * Math.sin(theta) * Math.cos(phi);
+                const y = r * Math.sin(theta) * Math.sin(phi);
+                const z = r * Math.cos(theta);
+                
+                points.push(new THREE.Vector3(x, y, z));
+            }
+            return points;
+        }
+
+        // Point generation for 3pz Orbital (Dumbbell with one radial node)
+        function generate3pzPoints(count, scale) {
+            const points = [];
+            // 3pz orbital - dumbbell with radial node
+            for (let i = 0; i < count; i++) {
+                // Use rejection sampling for 3pz distribution
+                let r, theta, prob;
+                do {
+                    r = scale * 1.5 * Math.random(); // Larger radius for 3p
+                    theta = Math.acos(2 * Math.random() - 1); // Angle from z-axis
+                    
+                    // 3pz probability ~ r^2 * (6-r/a0)^2 * (r/a0)^2 * e^(-r/3a0) * cos^2(theta)
+                    const rScaled = r / (scale/6);
+                    
+                    // Enhanced angular term for more pronounced dumbbell
+                    const angularTerm = Math.pow(Math.cos(theta), 4); // Use cos^4 instead of cos^2
+                    
+                    // Create a nodal plane at xy (theta = PI/2)
+                    const nodalPlaneEffect = Math.abs(Math.cos(theta)) < 0.2 ? 0.01 : 1.0;
+                    
+                    // Create a more pronounced radial node
+                    const radialNodeTerm = Math.pow(6 - rScaled, 2) * Math.pow(rScaled, 2);
+                    const radialNodeEffect = Math.abs(rScaled - 6) < 0.5 ? 0.05 : 1.0;
+                    
+                    prob = radialNodeTerm * Math.exp(-rScaled/3) * angularTerm * nodalPlaneEffect * radialNodeEffect;
+                } while (Math.random() * 5.0 > prob); // Stricter rejection
+                
+                const phi = Math.random() * Math.PI * 2;
+                
+                const x = r * Math.sin(theta) * Math.cos(phi);
+                const y = r * Math.sin(theta) * Math.sin(phi);
+                const z = r * Math.cos(theta);
+                
+                points.push(new THREE.Vector3(x, y, z));
+            }
+            return points;
+        }
+
+        // Point generation for 3dz² orbital
+        function generate3dz2Points(count, scale) {
+            const points = [];
+            // 3dz² orbital - donut with two lobes along z-axis
+            for (let i = 0; i < count; i++) {
+                // Use rejection sampling for 3dz² distribution
+                let r, theta, prob;
+                do {
+                    r = scale * 1.5 * Math.random(); // Larger radius for 3d
+                    theta = Math.acos(2 * Math.random() - 1); // Angle from z-axis
+                    
+                    // 3dz² probability ~ r^4 * e^(-r/3a0) * (3cos²(θ)-1)²
+                    const rScaled = r / (scale/6);
+                    
+                    // Angular part for 3dz² - creates the donut and two lobes
+                    const angularPart = Math.pow(3 * Math.pow(Math.cos(theta), 2) - 1, 2);
+                    
+                    // Create more pronounced nodal cones
+                    const nodalConeEffect = Math.abs(3 * Math.pow(Math.cos(theta), 2) - 1) < 0.3 ? 0.05 : 1.0;
+                    
+                    prob = Math.pow(rScaled, 4) * Math.exp(-rScaled/3) * angularPart * nodalConeEffect;
+                } while (Math.random() * 10.0 > prob); // Much stricter rejection
+                
+                const phi = Math.random() * Math.PI * 2;
+                
+                const x = r * Math.sin(theta) * Math.cos(phi);
+                const y = r * Math.sin(theta) * Math.sin(phi);
+                const z = r * Math.cos(theta);
+                
+                points.push(new THREE.Vector3(x, y, z));
+            }
+            return points;
+        }
+
+        init();
+    </script>
+</body>
+</html>
