@@ -56,6 +56,16 @@
             <option value="3p_H_z">3pz H (3,1,0)</option>
             <option value="3d_Fe_z2">3dz² Fe (3,2,0)</option>
         </select>
+        
+        <div style="margin-top: 15px;">
+            <label for="crossSectionSlider">Cross-Section (X-axis):</label>
+            <input type="range" id="crossSectionSlider" min="-10" max="10" value="10" step="0.1" style="width: 100%; margin-top: 5px;">
+            <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                <span>-10</span>
+                <span>0</span>
+                <span>10</span>
+            </div>
+        </div>
     </div>
 
     <!-- 1. REMOVE the old global Three.js script -->
@@ -88,6 +98,7 @@
         const particleSize = 0.025; 
 
         // Shader definitions
+        // Shader definitions
         const vertexShader = `
             // Attributes from THREE.SphereGeometry
             // attribute vec3 position; // REMOVE/COMMENT OUT - Provided by Three.js
@@ -111,10 +122,14 @@
             uniform float u_minSpeedAtEdge;         // KEEP THIS
             uniform float u_exponentialFalloffRate; // KEEP THIS
 
+            // Add new uniform for cross-section plane
+            uniform float u_crossSectionX;
+            
             varying vec3 vWorldPosition;
             varying vec3 vNormalWorld;
-            varying float vDepthFactor;
-
+            varying float vDepthFactor; // 0 (close, bright) to 1 (far, dark)
+            varying float vCrossSectionVisibility; // New varying from vertex shader
+            
             void main() {
                 // Extract the original position from the instanceMatrix (translation part)
                 // instanceMatrix is set once with the particle's initial static position.
@@ -150,6 +165,10 @@
                 vec4 worldPosition = modelMatrix * translationToAnimatedCenter * vec4(position, 1.0);
                 vWorldPosition = worldPosition.xyz;
                 
+                // Calculate cross-section visibility (1 = visible, 0 = hidden)
+                // Hide particles if their x position is greater than the cross-section plane
+                vCrossSectionVisibility = worldPosition.x <= u_crossSectionX ? 1.0 : 0.0;
+                
                 // Normals are transformed by the model matrix (overall orbital rotation)
                 // The individual particle spin doesn't reorient the sphere's normals in this simplified model
                 vNormalWorld = normalize(mat3(modelMatrix) * normal);
@@ -174,7 +193,8 @@
             varying vec3 vWorldPosition;
             varying vec3 vNormalWorld;
             varying float vDepthFactor; // 0 (close, bright) to 1 (far, dark)
-
+            varying float vCrossSectionVisibility; // New varying from vertex shader
+            
             // Define min/max brightness values
             const float minOverallBrightness = 0.12; // Increased minimum brightness
             const float maxOverallBrightness = 0.98; // Increased maximum brightness
@@ -182,6 +202,11 @@
             const float maxRawLight = 1.9;          // Increased maximum raw light
 
             void main() {
+                // Discard fragment if it should be hidden by cross-section
+                if (vCrossSectionVisibility < 0.5) {
+                    discard;
+                }
+                
                 vec3 N = normalize(vNormalWorld);
 
                 // Lighting Calc for Light 1
@@ -314,6 +339,18 @@
             });
             orbitalSelector.value = currentOrbital; // Ensure dropdown matches initial state
             switchOrbital(currentOrbital); // Initialize with the default orbital
+            
+            // Cross-section slider
+            const crossSectionSlider = document.getElementById('crossSectionSlider');
+            crossSectionSlider.addEventListener('input', (event) => {
+                const value = parseFloat(event.target.value);
+                // Update the cross-section value for all orbitals
+                for (const type in orbitalGroups) {
+                    if (orbitalGroups[type].material && orbitalGroups[type].material.uniforms) {
+                        orbitalGroups[type].material.uniforms.u_crossSectionX.value = value;
+                    }
+                }
+            });
 
             // Handle window resize
             window.addEventListener('resize', onWindowResize, false);
@@ -400,7 +437,8 @@
                 u_time: { value: 0.0 },
                 u_maxSpeedAtCenter: { value: 50.0 }, // Value from previous JS
                 u_minSpeedAtEdge: { value: 0.01 },    // Value from previous JS
-                u_exponentialFalloffRate: { value: 2.6 } // Value from previous JS
+                u_exponentialFalloffRate: { value: 2.6 }, // Value from previous JS
+                u_crossSectionX: { value: 10.0 } // Default to fully visible (no cross-section)
             };
 
             const material = new THREE.ShaderMaterial({
@@ -442,7 +480,6 @@
             return instancedMesh;
         }
 
-        // Point generation for 1s orbital (spherical) - Serves as 1s_H
         function generate1sPoints(count, scale) {
             const points = [];
             // 1s orbital - spherically symmetric
@@ -451,10 +488,10 @@
                 let r, prob;
                 do {
                     r = scale * Math.random(); // Random radius up to scale
-                    // 1s probability density ~ r^2 * e^(-2r)
+                    // 1s probability density ~ r^2 * e^(-2r/a0)
                     const rScaled = r / (scale/4);
                     prob = rScaled * rScaled * Math.exp(-2 * rScaled);
-                } while (Math.random() * 0.5 > prob); // Stricter rejection sampling
+                } while (Math.random() > prob); // Rejection sampling
                 
                 // Uniform distribution on sphere
                 const theta = Math.acos(2 * Math.random() - 1);
@@ -479,7 +516,7 @@
                 let r, prob;
                 do {
                     r = scale * 1.5 * Math.random(); // Larger radius for 2s
-                    // 2s probability density ~ r^2 * (2-r/a0)^2 * e^(-r/a0)
+                    // 2s probability density ~ r^2 * (2-r/a0)^2 * e^(-r/2a0)
                     const rScaled = r / (scale/4);
                     
                     // This creates a more pronounced node
@@ -504,7 +541,7 @@
             return points;
         }
 
-       // Point generation for 2pz orbital (dumbbell shape) - Serves as 2p_H_z
+        // Point generation for 2pz orbital (dumbbell shape) - Serves as 2p_H_z
         function generate2pzPoints(count, scale) {
             const points = [];
             // 2pz orbital - dumbbell shape along z-axis
