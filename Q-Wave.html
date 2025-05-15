@@ -94,8 +94,13 @@
         let currentOrbital = '1s_H'; // Default orbital
         const particleData = {}; 
 
-        const particleCount = 75000; 
+        const particleCount = 95000; 
         const particleSize = 0.025; 
+
+        let photons = []; // Array to store multiple photons
+        let photonWavelength = 0.5; // Default wavelength in nm
+        let photonSpeed = 2.0; // Speed of photon travel
+        let isPhotonActive = false;
 
         // Shader definitions
         // Shader definitions
@@ -184,11 +189,15 @@
 
         const fragmentShader = `
             uniform vec3 baseColor;
+            uniform vec3 lowDensityColor;
+            uniform vec3 midDensityColor;
+            uniform vec3 highDensityColor;
             uniform vec3 ambientLightColor;
             uniform vec3 directionalLightColor1;
             uniform vec3 directionalLightDirection1; // Should be normalized
             uniform vec3 directionalLightColor2;
             uniform vec3 directionalLightDirection2; // Should be normalized
+            uniform float u_crossSectionX; // We'll use this to adjust lighting
 
             varying vec3 vWorldPosition;
             varying vec3 vNormalWorld;
@@ -220,14 +229,52 @@
                 vec3 diffuse2 = directionalLightColor2 * lambertian2;
 
                 vec3 rawLighting = ambientLightColor + diffuse1 + diffuse2;
+                
+                // Check if we're in cross-section mode (u_crossSectionX < 10.0)
+                // and boost lighting for better visibility of internal structure
+                float crossSectionFactor = 10.0 - min(u_crossSectionX, 10.0);
+                float lightBoost = 1.0 + (crossSectionFactor * 0.05); // Reduced from 0.1 to 0.05 (max 1.5x boost)
+                
+                // Apply the boost to the raw lighting
+                rawLighting *= lightBoost;
+                
                 // Clamp the raw lighting contribution
                 rawLighting = clamp(rawLighting, vec3(minRawLight), vec3(maxRawLight));
                 
-                vec3 litColor = baseColor * rawLighting;
+                // Calculate density-based color
+                // Use distance from center as a proxy for electron density
+                float distFromCenter = length(vWorldPosition);
+                float maxDist = 10.0; // Maximum expected distance
+                float normalizedDist = clamp(distFromCenter / maxDist, 0.0, 1.0);
+                
+                // Invert the distance to get density (closer to center = higher density)
+                float density = 1.0 - normalizedDist;
+                
+                // Apply a curve to make the density transition more pronounced
+                density = pow(density, 2.0);
+                
+                // Choose color based on density
+                vec3 densityColor;
+                if (density > 0.7) {
+                    // High density
+                    float t = (density - 0.7) / 0.3;
+                    densityColor = mix(midDensityColor, highDensityColor, t);
+                } else if (density > 0.3) {
+                    // Medium density
+                    float t = (density - 0.3) / 0.4;
+                    densityColor = mix(lowDensityColor, midDensityColor, t);
+                } else {
+                    // Low density
+                    float t = density / 0.3;
+                    densityColor = mix(lowDensityColor, lowDensityColor, t); // Fade to low density color
+                }
+                
+                vec3 litColor = densityColor * rawLighting;
 
-                // Apply depth darkening
+                // Apply less depth darkening when in cross-section mode
+                float adjustedDepthFactor = vDepthFactor * (1.0 - (crossSectionFactor * 0.02)); // Reduced from 0.05 to 0.03
                 vec3 darkColorMultiplier = vec3(0.25, 0.25, 0.25); 
-                vec3 finalColor = mix(litColor, litColor * darkColorMultiplier, vDepthFactor);
+                vec3 finalColor = mix(litColor, litColor * darkColorMultiplier, adjustedDepthFactor);
 
                 // Clamp the final color to ensure it's within overall brightness limits
                 finalColor = clamp(finalColor, vec3(minOverallBrightness), vec3(maxOverallBrightness));
@@ -240,7 +287,10 @@
         const orbitalParams = {
             '1s_H': {
                 name: "1s H (1,0,0) - Simple sphere",
-                color: 0x00FF7F, // Spring Green
+                color: 0x4682B4, // Steel Blue
+                lowDensityColor: 0xB0C4DE, // Light Steel Blue
+                midDensityColor: 0x4682B4, // Steel Blue
+                highDensityColor: 0x27496D, // Deep Steel Blue
                 scale: 4.0, 
                 generatePoints: generate1sPoints,
                 cameraPosition: new THREE.Vector3(5, 5, 8) // Current position works well for 1s
@@ -248,6 +298,9 @@
             '2s_H': {
                 name: "2s H (2,0,0) - Sphere with radial node",
                 color: 0x87CEEB, // Sky Blue
+                lowDensityColor: 0xD6F3FF, // Pale Sky Blue
+                midDensityColor: 0x87CEEB, // Sky Blue
+                highDensityColor: 0x468DAF, // Desaturated Sky Blue
                 scale: 5.0, // 2s is generally larger than 1s
                 generatePoints: generate2sPoints,
                 cameraPosition: new THREE.Vector3(7, 7, 11) // Further away for 2s
@@ -255,13 +308,19 @@
             '2p_H_z': {
                 name: "2pz H (2,1,0) - Dumbbell",
                 color: 0xFFC0CB, // Pink
+                lowDensityColor: 0xFFE4EC, // Very light pink
+                midDensityColor: 0xFFC0CB, // Standard pink
+                highDensityColor: 0xC08090, // Muted rose/mauve
                 scale: 5.0, 
                 generatePoints: generate2pzPoints,
                 cameraPosition: new THREE.Vector3(7, 7, 11) // Further away for 2p
             },
             '3p_H_z': {
                 name: "3pz H (3,1,0) - Larger dumbbell with radial node",
-                color: 0xFF9966, // Peach
+                color: 0xFFDAB9, // Peach (updated from FF9966)
+                lowDensityColor: 0xFFF2E5, // Cream
+                midDensityColor: 0xFFDAB9, // Peach
+                highDensityColor: 0xCC9C75, // Burnt peach
                 scale: 6.0,
                 generatePoints: generate3pzPoints,
                 cameraPosition: new THREE.Vector3(9, 9, 14) // Even further for 3p
@@ -269,6 +328,9 @@
             '3d_Fe_z2': {
                 name: "3dz² Fe (3,2,0) - Larger dumbbell with radial node",
                 color: 0xFFFF00, // Yellow
+                lowDensityColor: 0xFFFFE0, // Light yellow
+                midDensityColor: 0xFFFF00, // Bright yellow
+                highDensityColor: 0xBFBF00, // Golden ochre
                 scale: 6.5, // d-orbitals are generally larger
                 generatePoints: generate3dz2Points,
                 cameraPosition: new THREE.Vector3(10, 10, 15) // Furthest for 3d
@@ -319,6 +381,9 @@
             controls.enableDamping = true;
             controls.dampingFactor = 0.05;
 
+            // Add photon controls to UI
+            addPhotonControls();
+
             // Nucleus
             const nucleusGeometry = new THREE.SphereGeometry(0.1, 32, 32);
             const nucleusMaterial = new THREE.MeshStandardMaterial({ color: 0xFFFFE0, emissive: 0x333300 });
@@ -359,6 +424,10 @@
             let animate = function() {
                 requestAnimationFrame(animate);
                 
+                const deltaTime = 1/60;
+                // Update photon position
+                updatePhoton(deltaTime);
+
                 // Update uniforms for all orbital materials
                 const time = performance.now() * 0.001; // Convert to seconds
                 for (const type in orbitalGroups) {
@@ -418,65 +487,316 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        function createOrbital(type) {
-            const params = orbitalParams[type];
-            if (!params.generatePoints) {
-                console.error(`generatePoints function is missing for orbital type: ${type}`);
-                return new THREE.Group(); // Return an empty group or handle error appropriately
-            }
-            
-            const shaderUniforms = {
-                baseColor: { value: new THREE.Color(params.color) },
-                orbitalScale: { value: params.scale },
-                ambientLightColor: { value: scene.userData.ambientLightColor },
-                directionalLightColor1: { value: scene.userData.directionalLight1.color },
-                directionalLightDirection1: { value: scene.userData.directionalLight1.direction },
-                directionalLightColor2: { value: scene.userData.directionalLight2.color },
-                directionalLightDirection2: { value: scene.userData.directionalLight2.direction },
-                viewMatrix: { value: camera.matrixWorldInverse }, // Initial value
-                u_time: { value: 0.0 },
-                u_maxSpeedAtCenter: { value: 50.0 }, // Value from previous JS
-                u_minSpeedAtEdge: { value: 0.01 },    // Value from previous JS
-                u_exponentialFalloffRate: { value: 2.6 }, // Value from previous JS
-                u_crossSectionX: { value: 10.0 } // Default to fully visible (no cross-section)
-            };
+        // ---- ADD PHOTON FUNCTIONS START ----
 
-            const material = new THREE.ShaderMaterial({
-                uniforms: shaderUniforms,
-                vertexShader: vertexShader,
-                fragmentShader: fragmentShader,
+        // Create a photon that looks like a dynamic wave
+        function createPhoton() {
+            // Remove any existing photon waves first
+            scene.children.forEach(child => {
+                if (child.userData && child.userData.isPhotonWave) {
+                    scene.remove(child);
+                }
             });
             
-            const geometry = new THREE.SphereGeometry(particleSize, 5, 5); 
+            // Create a proper sinusoidal EM wave
+            const waveGeometry = new THREE.PlaneGeometry(20, 20, 400, 400); // Smaller plane
+            const waveMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    time: { value: 0 },
+                    wavelength: { value: photonWavelength * 4.0 }, // Shorter wavelength
+                    speed: { value: 0.3 }, // Keep slow speed
+                    amplitude: { value: 1.2 }, // Keep amplitude
+                    color1: { value: new THREE.Color(0xffffff) }, // Top color (white)
+                    color2: { value: new THREE.Color(0x07b164) }  // Bottom color (green)
+                },
+                vertexShader: `
+                    uniform float time;
+                    uniform float wavelength;
+                    uniform float speed;
+                    uniform float amplitude;
+                    varying vec3 vPosition;
+                    varying float vWaveHeight;
+                    varying float vEdgeFade;
+                    varying float vGradientFactor;
+                    varying float vIsInWaveArea;
+                    varying float vDisplacedZ; // For color gradient
+                    varying float vWavePhase; // Pass the wave phase to fragment shader
 
-            const instancedMesh = new THREE.InstancedMesh(geometry, material, particleCount);
-            // instanceMatrix will store the initial static position of each particle
-            // It's not dynamic per frame anymore for the Y-axis spin.
-            instancedMesh.instanceMatrix.setUsage(THREE.StaticDrawUsage); 
+                    void main() {
+                        vPosition = position;
+                        
+                        // Calculate wave properties
+                        float k = 2.0 * 3.141592 / wavelength;
+                        
+                        // Create waves moving from left to right (along X axis)
+                        float wavePhase = k * (position.x - time * speed);
+                        vWavePhase = wavePhase; // Pass to fragment shader
+                        
+                        // Z-axis narrowing with rapid falloff at z=±3
+                        float zThreshold = 3.0; // Smaller threshold
+                        float zSharpness = 5.0; // Sharper falloff
+                        float zFactor = 1.0 / (1.0 + exp(zSharpness * (abs(position.y) - zThreshold)));
+                        
+                        // Create a single wave with a Gaussian envelope
+                        float waveRadius = 8.0; // Smaller radius
+                        float distFromCenter = length(position.xz);
+                        float waveAreaFactor = smoothstep(waveRadius, waveRadius - 2.0, distFromCenter);
+                        vIsInWaveArea = waveAreaFactor;
+                        
+                        float waveHeight = amplitude * sin(wavePhase);
+                        vWaveHeight = waveHeight * waveAreaFactor * zFactor;
+                        vEdgeFade = smoothstep(waveRadius - 2.0, waveRadius, distFromCenter);
+                        vGradientFactor = vWaveHeight;
+                        
+                        vec3 newPosition = position;
+                        newPosition.z += vWaveHeight;
+                        vDisplacedZ = newPosition.z; // Pass displaced Z to fragment shader
+                        
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 color1;
+                    uniform vec3 color2;
+                    varying vec3 vPosition;
+                    varying float vWaveHeight;
+                    varying float vEdgeFade;
+                    varying float vGradientFactor;
+                    varying float vIsInWaveArea;
+                    varying float vDisplacedZ;
+                    varying float vWavePhase;
+                
+                    void main() {
+                        float distFromCenter = length(vPosition.xz);
+                        float radialFade = smoothstep(8.0 - 2.0, 8.0, distFromCenter);
+                    
+                        // Blend color from bottom (low z) to top (high z) using displaced Z
+                        float zMin = -1.2;
+                        float zMax = 1.2;
+                        float zBlend = clamp((vDisplacedZ - zMin) / (zMax - zMin), 0.0, 1.0);
+                        vec3 waveColor = mix(color2, color1, zBlend);
+                    
+                        // COMPLETELY REMOVE GRID LINES
+                        float lightFactor = 0.7 + 0.3 * abs(vWaveHeight);
+                    
+                        // Make the wave visible along its entire path within the wave area
+                        float finalAlpha = 0.0;
+                    
+                        if (vIsInWaveArea > 0.01) {
+                            // Calculate distance from the wave's zero-crossing line
+                            float phaseModulo = mod(vWavePhase, 6.28318);
+                            float distFromZeroCrossing = min(
+                                min(abs(phaseModulo - 0.0), abs(phaseModulo - 6.28318)),
+                                min(abs(phaseModulo - 3.14159), abs(phaseModulo - 9.42478))
+                            );
+                            
+                            // Create a continuous band along the wave
+                            float bandWidth = 0.8;
+                            float pathVisibility = smoothstep(bandWidth, 0.0, distFromZeroCrossing);
+                            
+                            // Combine wave height visibility with wave path visibility
+                            float heightVisibility = smoothstep(0.01, 0.1, abs(vWaveHeight)) * 0.9;
+                            finalAlpha = max(heightVisibility, pathVisibility * 0.7 * vIsInWaveArea);
+                            
+                            // ENSURE NO PLANE IS VISIBLE - only show where there's actual wave
+                            if (abs(vWaveHeight) < 0.05 && pathVisibility < 0.3) {
+                                finalAlpha = 0.0;
+                            }
+                        }
+                    
+                        // If outside wave area or at edge, make transparent
+                        if (vIsInWaveArea < 0.01 || radialFade > 0.9) {
+                            finalAlpha = 0.0;
+                        }
+                    
+                        vec3 finalColor = waveColor * lightFactor;
+                    
+                        gl_FragColor = vec4(finalColor, finalAlpha);
+                    }
+                `,
+                transparent: true,
+                side: THREE.DoubleSide
+            });
+            
+            const wave = new THREE.Mesh(waveGeometry, waveMaterial);
+            wave.rotation.x = -Math.PI / 2;
+            wave.position.y = 0; // At the same level as the atom
+            wave.position.x = -10; // Start closer to the atom
+            wave.userData = {
+                isPhotonWave: true,
+                startTime: performance.now() * 0.001, // Current time in seconds
+                totalDistance: 0,
+                wavelength: photonWavelength * 4.0 // Store the wavelength for reference
+            };
+            scene.add(wave);
+            
+            photons = [wave];
+            isPhotonActive = true;
+        }
 
-
-            const generatedPoints = params.generatePoints(particleCount, params.scale);
-            particleData[type] = []; 
-
-            const initialPhases = new Float32Array(particleCount); // For a_initialPhase attribute
-
-            const matrix = new THREE.Matrix4();
-            for (let i = 0; i < particleCount; i++) {
-                const point = generatedPoints[i] || new THREE.Vector3(); 
-
-                matrix.setPosition(point);
-                instancedMesh.setMatrixAt(i, matrix);
-
-                const randomPhase = Math.random() * Math.PI * 2;
-                initialPhases[i] = randomPhase;
-
-                particleData[type][i] = {
-                    originalPosition: point.clone(), // Still useful for potential other effects or debugging
-                    initialPhase: randomPhase // Store for reference if needed
-                };
+        function updatePhoton(deltaTime) {
+            for (let i = photons.length - 1; i >= 0; i--) {
+                const photon = photons[i];
+                
+                if (photon.material && photon.material.uniforms) {
+                    const elapsedTime = (performance.now() * 0.001) - photon.userData.startTime;
+                    photon.material.uniforms.time.value = elapsedTime;
+                    
+                    // Move the photon along the x-axis
+                    const moveSpeed = 0.3;
+                    photon.position.x += moveSpeed * deltaTime;
+                    
+                    // Track total distance traveled
+                    photon.userData.totalDistance += moveSpeed * deltaTime;
+                    
+                    // Remove photon after it has traveled approximately one wavelength
+                    const maxDistance = photon.userData.wavelength * 1.2;
+                    
+                    if (photon.userData.totalDistance > maxDistance) {
+                        scene.remove(photon);
+                        photons.splice(i, 1);
+                        
+                        if (photons.length === 0) {
+                            isPhotonActive = false;
+                        }
+                    }
+                }
             }
-            instancedMesh.geometry.setAttribute('a_initialPhase', new THREE.InstancedBufferAttribute(initialPhases, 1));
-            instancedMesh.instanceMatrix.needsUpdate = true; // Update once after setting all initial matrices
+        }
+
+        // Add photon controls to the UI
+        function addPhotonControls() {
+            // Create a container for photon controls
+            const guiContainer = document.getElementById('gui-container');
+            
+            const photonContainer = document.createElement('div');
+            photonContainer.style.marginTop = '15px';
+            guiContainer.appendChild(photonContainer);
+            
+            // Add wavelength slider
+            const wavelengthLabel = document.createElement('label');
+            wavelengthLabel.textContent = 'Photon Wavelength (nm):';
+            wavelengthLabel.setAttribute('for', 'wavelengthSlider');
+            photonContainer.appendChild(wavelengthLabel);
+            
+            const wavelengthSlider = document.createElement('input');
+            wavelengthSlider.type = 'range';
+            wavelengthSlider.id = 'wavelengthSlider';
+            wavelengthSlider.min = '0.1';
+            wavelengthSlider.max = '2.0';
+            wavelengthSlider.step = '0.1';
+            wavelengthSlider.value = photonWavelength;
+            wavelengthSlider.style.width = '100%';
+            wavelengthSlider.style.marginTop = '5px';
+            photonContainer.appendChild(wavelengthSlider);
+            
+            const wavelengthDisplay = document.createElement('div');
+            wavelengthDisplay.style.display = 'flex';
+            wavelengthDisplay.style.justifyContent = 'space-between';
+            wavelengthDisplay.style.fontSize = '12px';
+            wavelengthDisplay.innerHTML = '<span>0.1</span><span>1.0</span><span>2.0</span>';
+            photonContainer.appendChild(wavelengthDisplay);
+            
+            // Add energy display (E = hc/λ)
+            const energyDisplay = document.createElement('div');
+            energyDisplay.id = 'energyDisplay';
+            energyDisplay.style.marginTop = '5px';
+            energyDisplay.style.fontSize = '14px';
+            updateEnergyDisplay();
+            photonContainer.appendChild(energyDisplay);
+            
+            // Add emit photon button
+            const emitButton = document.createElement('button');
+            emitButton.textContent = 'Emit Photon';
+            emitButton.style.marginTop = '10px';
+            emitButton.style.padding = '8px 12px';
+            emitButton.style.backgroundColor = '#444';
+            emitButton.style.color = '#f0f0f0';
+            emitButton.style.border = '1px solid #555';
+            emitButton.style.borderRadius = '4px';
+            emitButton.style.cursor = 'pointer';
+            emitButton.style.width = '100%';
+            photonContainer.appendChild(emitButton);
+            
+            // Event listeners
+            wavelengthSlider.addEventListener('input', function(event) {
+                photonWavelength = parseFloat(event.target.value);
+                updateEnergyDisplay();
+            });
+            
+            emitButton.addEventListener('click', function() {
+                createPhoton();
+            });
+            
+            function updateEnergyDisplay() {
+                // E = hc/λ, h = 4.135667696e-15 eV⋅s, c = 299792458 m/s
+                const h = 4.135667696e-15; // eV⋅s
+                const c = 299792458; // m/s
+                const energyEV = (h * c) / (photonWavelength * 1e-9);
+                energyDisplay.textContent = `Energy: ${energyEV.toFixed(2)} eV`;
+            }
+            
+            updateEnergyDisplay(); // Initial display
+        }
+
+        // ---- ADD PHOTON FUNCTIONS END ----
+
+        function createOrbital(orbitalType) {
+            const params = orbitalParams[orbitalType];
+            const scale = params.scale;
+            
+            // Generate points for this orbital type
+            const points = params.generatePoints(particleCount, scale);
+            
+            // Create instanced mesh for particles
+            const sphereGeometry = new THREE.SphereGeometry(particleSize, 8, 6);
+            
+            // Create shader material
+            const material = new THREE.ShaderMaterial({
+                vertexShader: vertexShader,
+                fragmentShader: fragmentShader,
+                uniforms: {
+                    baseColor: { value: new THREE.Color(params.color) },
+                    lowDensityColor: { value: new THREE.Color(params.lowDensityColor) },
+                    midDensityColor: { value: new THREE.Color(params.midDensityColor) },
+                    highDensityColor: { value: new THREE.Color(params.highDensityColor) },
+                    ambientLightColor: { value: scene.userData.ambientLightColor },
+                    directionalLightColor1: { value: scene.userData.directionalLight1.color },
+                    directionalLightDirection1: { value: scene.userData.directionalLight1.direction },
+                    directionalLightColor2: { value: scene.userData.directionalLight2.color },
+                    directionalLightDirection2: { value: scene.userData.directionalLight2.direction },
+                    orbitalScale: { value: scale },
+                    u_time: { value: 0.0 },
+                    u_maxSpeedAtCenter: { value: 30.0 },
+                    u_minSpeedAtEdge: { value: 0.02 },
+                    u_exponentialFalloffRate: { value: 3.5 },
+                    u_crossSectionX: { value: 10.0 }, // Default to showing full orbital
+                    viewMatrix: { value: camera.matrixWorldInverse }
+                }
+            });
+            
+            // Create instanced mesh
+            const instancedMesh = new THREE.InstancedMesh(sphereGeometry, material, points.length);
+            
+            // Create a buffer attribute for initial phase
+            const initialPhaseAttribute = new Float32Array(points.length);
+            for (let i = 0; i < points.length; i++) {
+                initialPhaseAttribute[i] = Math.random() * Math.PI * 2;
+            }
+            
+            // Add the attribute to the geometry
+            instancedMesh.geometry.setAttribute('a_initialPhase', new THREE.InstancedBufferAttribute(initialPhaseAttribute, 1));
+            
+            // Set instance matrices
+            const dummy = new THREE.Object3D();
+            for (let i = 0; i < points.length; i++) {
+                dummy.position.set(points[i].x, points[i].y, points[i].z);
+                dummy.updateMatrix();
+                instancedMesh.setMatrixAt(i, dummy.matrix);
+            }
+            
+            instancedMesh.instanceMatrix.needsUpdate = true;
+            
             return instancedMesh;
         }
 
