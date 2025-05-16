@@ -66,6 +66,47 @@
                 <span>10</span>
             </div>
         </div>
+        
+            
+        <!-- Wave Controls Section -->
+        <div style="margin-top: 15px; border-top: 1px solid #555; padding-top: 10px;">
+            <h3 style="margin-top: 0; font-size: 16px;">Wave Controls</h3>
+            
+            <div style="margin-top: 10px;">
+                <label for="waveSpeedSlider">Wave Speed:</label>
+                <input type="range" id="waveSpeedSlider" min="0.1" max="2.0" value="1.0" step="0.1" style="width: 100%; margin-top: 5px;">
+                <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                    <span>Slow</span>
+                    <span>Fast</span>
+                </div>
+            </div>
+            
+            <div style="margin-top: 10px;">
+                <label for="waveHeightSlider">Wave Height:</label>
+                <input type="range" id="waveHeightSlider" min="0.2" max="1.5" value="0.8" step="0.1" style="width: 100%; margin-top: 5px;">
+                <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                    <span>Low</span>
+                    <span>High</span>
+                </div>
+            </div>
+            
+            <div style="margin-top: 10px;">
+                <label for="waveFrequencySlider">Wave Frequency:</label>
+                <input type="range" id="waveFrequencySlider" min="0.1" max="0.8" value="0.3" step="0.05" style="width: 100%; margin-top: 5px;">
+                <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                    <span>Wide</span>
+                    <span>Narrow</span>
+                </div>
+            </div>
+        </div>
+        
+
+        <!-- Add Emit Wave Button -->
+        <div style="margin-top: 15px;">
+            <button id="emitWaveBtn" style="width: 100%; padding: 8px; background-color: #4682B4; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                Emit Photon Wave
+            </button>
+        </div>
     </div>
 
     <!-- 1. REMOVE the old global Three.js script -->
@@ -94,8 +135,8 @@
         let currentOrbital = '1s_H'; // Default orbital
         const particleData = {}; 
 
-        const particleCount = 95000; 
-        const particleSize = 0.025; 
+        const particleCount = 45000; 
+        const particleSize = 0.06;  
 
         let photons = []; // Array to store multiple photons
         let photonWavelength = 0.5; // Default wavelength in nm
@@ -337,6 +378,210 @@
             }
         };
 
+        // ---- PHOTON WAVE IMPLEMENTATION ----
+        function setupPhotonWave(scene) {
+            // Configuration for the wave - adjusted for better visualization
+            const waveConfig = {
+                waveSpeed: 1.0,       // Reduced speed (was 1.5)
+                waveHeight: 0.8,      // Increased height (was 0.3)
+                waveFrequency: 0.3,   // Reduced frequency for wider waves (was 0.8)
+                wavelength: photonWavelength,
+                movementType: 'linear',
+                waveMode: 'partial'
+            };
+        
+            // Create a grid of particles for the wave - increased size
+            const gridSize = 60;      // Increased from 20
+            const gridSpacing = 0.3;  // Increased from 0.1
+            const totalParticles = gridSize * gridSize;
+            
+            // Create geometry for wave particles - increased size
+            const waveParticleGeometry = new THREE.SphereGeometry(0.15, 8, 6); // Increased from 0.03
+            const waveParticleMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x00ffff,
+                emissive: 0x003333,
+                transparent: true,
+                opacity: 0.8
+            });
+            
+            // Create instanced mesh for wave particles
+            const waveParticles = new THREE.InstancedMesh(
+                waveParticleGeometry,
+                waveParticleMaterial,
+                totalParticles
+            );
+            waveParticles.visible = false;
+            scene.add(waveParticles);
+            
+            // Create dummy for positioning
+            const dummy = new THREE.Object3D();
+            
+            // Initialize particle positions in a grid - in X-Z plane
+            for (let i = 0; i < gridSize; i++) {
+                for (let j = 0; j < gridSize; j++) {
+                    const index = i * gridSize + j;
+                    
+                    // Position in a grid on the x-z plane
+                    const x = (i - gridSize/2) * gridSpacing;
+                    const z = (j - gridSize/2) * gridSpacing;
+                    const y = 0; // Y position at center level
+                    
+                    dummy.position.set(x, y, z + 5); // Start position (to the right of the atom)
+                    dummy.updateMatrix();
+                    waveParticles.setMatrixAt(index, dummy.matrix);
+                }
+            }
+            waveParticles.instanceMatrix.needsUpdate = true;
+            
+            // Wave animation variables
+            let waveActive = false;
+            let waveTime = 0;
+            let wavePosition = 5; // Starting z position (to the right)
+            
+            // Function to calculate wave height at a specific point
+            function calculateWaveHeight(x, y, z, currentTime, config) {
+                if (!waveActive) return 0;
+                
+                // Distance from center of wave - use X and Z coordinates
+                const dx = x;
+                const dz = z - wavePosition; // Distance from current wave position
+                const distance = Math.sqrt(dx * dx + dz * dz);
+                
+                // Create a wave that doesn't affect the entire grid
+                // Use a Gaussian envelope to limit wave effect
+                const maxDistance = gridSize * gridSpacing / 2;
+                const envelope = Math.exp(-distance * distance / (2 * (maxDistance/2) * (maxDistance/2)));
+                
+                // Wave height calculation
+                const wave = Math.sin(distance * config.waveFrequency - currentTime) * 
+                             config.waveHeight * envelope;
+                
+                return wave;
+            }
+            
+            // Function to emit a photon wave
+            function emitWave() {
+                if (waveActive) return; // Don't emit if a wave is already active
+                
+                waveActive = true;
+                waveTime = 0;
+                wavePosition = 5; // Reset position to right side
+                waveParticles.visible = true; // Make particles visible
+                
+                // Update wave color based on photon wavelength
+                // Simple mapping: lower wavelength (higher energy) = blue, higher wavelength = red
+                const hue = Math.max(0, Math.min(240, 240 * (1 - photonWavelength / 2)));
+                const color = new THREE.Color().setHSL(hue/360, 1, 0.5);
+                waveParticleMaterial.color.copy(color);
+                waveParticleMaterial.emissive.copy(color).multiplyScalar(0.3);
+            }
+            
+    // Function to update wave animation
+    function updateWave(deltaTime) {
+        if (!waveActive) return;
+        
+        // Get current values from sliders
+        waveConfig.waveSpeed = parseFloat(document.getElementById('waveSpeedSlider').value);
+        waveConfig.waveHeight = parseFloat(document.getElementById('waveHeightSlider').value);
+        waveConfig.waveFrequency = parseFloat(document.getElementById('waveFrequencySlider').value);
+        
+        // Update time and position - moving left (negative direction)
+        waveTime += deltaTime * waveConfig.waveSpeed;
+        wavePosition -= deltaTime * waveConfig.waveSpeed * 0.4;
+
+        // Update time and position - moving left (negative direction)
+        waveTime += deltaTime * waveConfig.waveSpeed;
+        wavePosition -= deltaTime * waveConfig.waveSpeed * 0.4;
+        
+        // If wave has moved past the atom, hide it
+        if (wavePosition < -5) {
+            waveActive = false;
+            waveParticles.visible = false;
+            return;
+        }
+        
+        // Update particle positions based on wave function
+        for (let i = 0; i < gridSize; i++) {
+            for (let j = 0; j < gridSize; j++) {
+                const index = i * gridSize + j;
+                
+                // Base position in grid (x-z plane)
+                const x = (i - gridSize/2) * gridSpacing;
+                const z = (j - gridSize/2) * gridSpacing;
+                const y = 0; // Base Y position
+                
+                // Calculate distance from wave center
+                const waveCenter = new THREE.Vector2(0, wavePosition);
+                const particlePos = new THREE.Vector2(x, z);
+                const distanceFromWaveCenter = particlePos.distanceTo(waveCenter);
+                
+                // Define the active wave radius - particles outside this won't move
+                const waveRadius = 3.0;
+                
+                // Calculate wave height at this point
+                let height = 0;
+                let opacity = 0;
+                
+                // Only apply wave effect to particles within the wave radius
+                if (distanceFromWaveCenter < waveRadius) {
+                    // Calculate wave phase based on distance from center and time
+                    const phase = distanceFromWaveCenter * waveConfig.waveFrequency - waveTime;
+                    
+                    // Calculate height using sine wave
+                    height = Math.sin(phase) * waveConfig.waveHeight;
+                    
+                    // Calculate opacity based on distance from wave center and height
+                    // This creates a "fade in/out" effect as the wave passes
+                    const distanceFactor = 1.0 - (distanceFromWaveCenter / waveRadius);
+                    const heightFactor = Math.abs(height) / waveConfig.waveHeight;
+                    opacity = distanceFactor * heightFactor;
+                    
+                    // Boost opacity for more visible effect
+                    opacity = Math.pow(opacity, 0.5) * 0.9;
+                }
+                
+                // Apply height to Y position
+                dummy.position.set(x, height, z);
+                
+                // Set scale based on opacity (smaller when fading)
+                const scale = opacity * 1.0;
+                dummy.scale.set(scale, scale, scale);
+                
+                dummy.updateMatrix();
+                waveParticles.setMatrixAt(index, dummy.matrix);
+            }
+        }
+
+    
+    waveParticles.instanceMatrix.needsUpdate = true;
+}
+            
+            // Connect sliders to update the wave config
+            const waveSpeedSlider = document.getElementById('waveSpeedSlider');
+            const waveHeightSlider = document.getElementById('waveHeightSlider');
+            const waveFrequencySlider = document.getElementById('waveFrequencySlider');
+
+            // Initialize with default values
+            if (waveSpeedSlider) waveSpeedSlider.value = waveConfig.waveSpeed;
+            if (waveHeightSlider) waveHeightSlider.value = waveConfig.waveHeight;
+            if (waveFrequencySlider) waveFrequencySlider.value = waveConfig.waveFrequency;
+
+            // Connect to the emit button
+            const emitButton = document.getElementById('emitWaveBtn');
+            if (emitButton) {
+                emitButton.addEventListener('click', emitWave);
+            } else {
+                // Add event listener once DOM is loaded
+                window.addEventListener('DOMContentLoaded', () => {
+                    const btn = document.getElementById('emitWaveBtn');
+                    if (btn) btn.addEventListener('click', emitWave);
+                });
+            }
+            
+            // Return the update function to be called in the animation loop
+            return updateWave;
+        }
+
         function init() {
             // Scene
             scene = new THREE.Scene();
@@ -377,17 +622,14 @@
 
 
             // Controls
-            controls = new OrbitControls(camera, renderer.domElement); // Changed from THREE.OrbitControls
+            controls = new OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
             controls.dampingFactor = 0.05;
-
-            // Add photon controls to UI
-            addPhotonControls();
 
             // Nucleus
             const nucleusGeometry = new THREE.SphereGeometry(0.1, 32, 32);
             const nucleusMaterial = new THREE.MeshStandardMaterial({ color: 0xFFFFE0, emissive: 0x333300 });
-            const nucleus = new THREE.Mesh(nucleusGeometry, nucleusMaterial); // Renamed to avoid conflict
+            const nucleus = new THREE.Mesh(nucleusGeometry, nucleusMaterial);
             nucleus.visible = false; 
             scene.add(nucleus);
 
@@ -417,6 +659,9 @@
                 }
             });
 
+            // Initialize the photon wave system
+            const updatePhotonWave = setupPhotonWave(scene);
+
             // Handle window resize
             window.addEventListener('resize', onWindowResize, false);
 
@@ -427,6 +672,11 @@
                 const deltaTime = 1/60;
                 // Update photon position
                 updatePhoton(deltaTime);
+
+                // Update photon wave
+                if (typeof updatePhotonWave === 'function') {
+                    updatePhotonWave(deltaTime);
+                }
 
                 // Update uniforms for all orbital materials
                 const time = performance.now() * 0.001; // Convert to seconds
@@ -486,10 +736,12 @@
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
-
-        // ---- ADD PHOTON FUNCTIONS START ----
-
-        // Create a photon that looks like a dynamic wave
+        
+        // Initialize the photon wave system will be done after scene is created
+        
+        // This animate function is already defined in init()
+        
+        // Modify the createPhoton function to also emit a wave
         function createPhoton() {
             // Remove any existing photon waves first
             scene.children.forEach(child => {
@@ -966,6 +1218,7 @@
             }
             return points;
         }
+
 
         init();
     </script>
