@@ -465,7 +465,7 @@
                 
                 waveActive = true;
                 waveTime = 0;
-                wavePosition = 5; // Reset position to right side
+                wavePosition = 10; // Start position further to the right (was 5)
                 waveParticles.visible = true; // Make particles visible
                 
                 // Update wave color based on photon wavelength
@@ -475,26 +475,17 @@
                 waveParticleMaterial.color.copy(color);
                 waveParticleMaterial.emissive.copy(color).multiplyScalar(0.3);
             }
-            
+                
     // Function to update wave animation
     function updateWave(deltaTime) {
         if (!waveActive) return;
         
-        // Get current values from sliders
-        waveConfig.waveSpeed = parseFloat(document.getElementById('waveSpeedSlider').value);
-        waveConfig.waveHeight = parseFloat(document.getElementById('waveHeightSlider').value);
-        waveConfig.waveFrequency = parseFloat(document.getElementById('waveFrequencySlider').value);
-        
         // Update time and position - moving left (negative direction)
-        waveTime += deltaTime * waveConfig.waveSpeed;
-        wavePosition -= deltaTime * waveConfig.waveSpeed * 0.4;
-
-        // Update time and position - moving left (negative direction)
-        waveTime += deltaTime * waveConfig.waveSpeed;
-        wavePosition -= deltaTime * waveConfig.waveSpeed * 0.4;
+        waveTime += deltaTime * waveConfig.waveSpeed * 0.5;
+        wavePosition -= deltaTime * waveConfig.waveSpeed * 1.0;
         
         // If wave has moved past the atom, hide it
-        if (wavePosition < -5) {
+        if (wavePosition < -10) { // Extended distance
             waveActive = false;
             waveParticles.visible = false;
             return;
@@ -508,53 +499,55 @@
                 // Base position in grid (x-z plane)
                 const x = (i - gridSize/2) * gridSpacing;
                 const z = (j - gridSize/2) * gridSpacing;
-                const y = 0; // Base Y position
                 
-                // Calculate distance from wave center
-                const waveCenter = new THREE.Vector2(0, wavePosition);
-                const particlePos = new THREE.Vector2(x, z);
-                const distanceFromWaveCenter = particlePos.distanceTo(waveCenter);
+                // Calculate distance from wave center in X-Z plane (circular wave)
+                const dx = x;
+                const dz = z - wavePosition;
+                const distanceFromCenter = Math.sqrt(dx * dx + dz * dz);
                 
-                // Define the active wave radius - particles outside this won't move
-                const waveRadius = 3.0;
+                // Define the active wave radius and larger visible radius
+                const waveRadius = 4.0;
+                const visibleRadius = 8.0; // Increased for smoother transition
                 
-                // Calculate wave height at this point
+                // Calculate wave effect
                 let height = 0;
                 let opacity = 0;
                 
-                // Only apply wave effect to particles within the wave radius
-                if (distanceFromWaveCenter < waveRadius) {
-                    // Calculate wave phase based on distance from center and time
-                    const phase = distanceFromWaveCenter * waveConfig.waveFrequency - waveTime;
+                if (distanceFromCenter < visibleRadius) {
+                    // Calculate fade factor based on distance from wave center
+                    // This creates a gradual fade in/out effect
+                    const fadeFactor = 1.0 - (distanceFromCenter / visibleRadius);
                     
-                    // Calculate height using sine wave
-                    height = Math.sin(phase) * waveConfig.waveHeight;
+                    // Apply a smooth curve to the fade factor
+                    const smoothFade = Math.pow(fadeFactor, 3);
+                    opacity = smoothFade * 0.2; // Base opacity for stationary particles
                     
-                    // Calculate opacity based on distance from wave center and height
-                    // This creates a "fade in/out" effect as the wave passes
-                    const distanceFactor = 1.0 - (distanceFromWaveCenter / waveRadius);
-                    const heightFactor = Math.abs(height) / waveConfig.waveHeight;
-                    opacity = distanceFactor * heightFactor;
-                    
-                    // Boost opacity for more visible effect
-                    opacity = Math.pow(opacity, 0.5) * 0.9;
+                    if (distanceFromCenter < waveRadius) {
+                        // Calculate wave height using a smooth bell curve
+                        const normalizedDist = distanceFromCenter / waveRadius;
+                        
+                        // Bell curve formula: e^(-x²)
+                        height = waveConfig.waveHeight * Math.exp(-normalizedDist * normalizedDist * 2.0);
+                        
+                        // Calculate opacity based on height (higher = more visible)
+                        opacity = Math.min(0.2 + height / waveConfig.waveHeight * 0.8, 1.0);
+                    }
                 }
                 
-                // Apply height to Y position
+                // Apply height to Y position - particles only move up and down
                 dummy.position.set(x, height, z);
                 
                 // Set scale based on opacity (smaller when fading)
-                const scale = opacity * 1.0;
+                const scale = opacity;
                 dummy.scale.set(scale, scale, scale);
                 
                 dummy.updateMatrix();
                 waveParticles.setMatrixAt(index, dummy.matrix);
             }
         }
-
-    
-    waveParticles.instanceMatrix.needsUpdate = true;
-}
+        
+        waveParticles.instanceMatrix.needsUpdate = true;
+    }
             
             // Connect sliders to update the wave config
             const waveSpeedSlider = document.getElementById('waveSpeedSlider');
