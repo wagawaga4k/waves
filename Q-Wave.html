@@ -70,7 +70,16 @@
             
         <!-- Wave Controls Section -->
         <div style="margin-top: 15px; border-top: 1px solid #555; padding-top: 10px;">
-            <h3 style="margin-top: 0; font-size: 16px;">Wave Controls</h3>
+            <h3 style="margin-top: 0; font-size: 16px;">Photon Wave Controls</h3>
+            
+            <div style="margin-top: 10px;">
+                <label for="wavelengthSlider">Wavelength: <span id="currentWavelength">0.5 nm</span></label>
+                <input type="range" id="wavelengthSlider" min="0.1" max="2.0" value="0.5" step="0.1" style="width: 100%; margin-top: 5px;">
+                <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                    <span>0.1 nm (X-ray)</span>
+                    <span>2.0 nm (UV)</span>
+                </div>
+            </div>
             
             <div style="margin-top: 10px;">
                 <label for="waveSpeedSlider">Wave Speed:</label>
@@ -82,21 +91,20 @@
             </div>
             
             <div style="margin-top: 10px;">
-                <label for="waveHeightSlider">Wave Height:</label>
-                <input type="range" id="waveHeightSlider" min="0.2" max="1.5" value="0.8" step="0.1" style="width: 100%; margin-top: 5px;">
+                <label for="waveHeightSlider">Amplitude:</label>
+                <input type="range" id="waveHeightSlider" min="0.5" max="3.0" value="1.5" step="0.1" style="width: 100%; margin-top: 5px;">
                 <div style="display: flex; justify-content: space-between; font-size: 12px;">
                     <span>Low</span>
                     <span>High</span>
                 </div>
             </div>
-            
-            <div style="margin-top: 10px;">
-                <label for="waveFrequencySlider">Wave Frequency:</label>
-                <input type="range" id="waveFrequencySlider" min="0.1" max="0.8" value="0.3" step="0.05" style="width: 100%; margin-top: 5px;">
-                <div style="display: flex; justify-content: space-between; font-size: 12px;">
-                    <span>Wide</span>
-                    <span>Narrow</span>
-                </div>
+        </div>
+        
+        <!-- Add this after the Wave Controls Section -->
+        <div style="margin-top: 15px; border-top: 1px solid #555; padding-top: 10px;">
+            <h3 style="margin-top: 0; font-size: 16px;">Photon Properties</h3>
+            <div id="photonEnergyDisplay" style="margin-top: 5px; font-size: 14px;">
+                Photon Energy: 0.00 eV
             </div>
         </div>
         
@@ -142,6 +150,13 @@
         let photonWavelength = 0.5; // Default wavelength in nm
         let photonSpeed = 2.0; // Speed of photon travel
         let isPhotonActive = false;
+        
+        // Add variables for wave animation
+        let time = 0;
+        let waveSpeed = 1.0;
+        let waveHeight = 0.8;
+        let waveFrequency = 0.3;
+        let photonWave = null;
 
         // Shader definitions
         // Shader definitions
@@ -382,21 +397,21 @@
         function setupPhotonWave(scene) {
             // Configuration for the wave - adjusted for better visualization
             const waveConfig = {
-                waveSpeed: 1.0,       // Reduced speed (was 1.5)
-                waveHeight: 0.8,      // Increased height (was 0.3)
-                waveFrequency: 0.3,   // Reduced frequency for wider waves (was 0.8)
+                waveSpeed: 1.0,       
+                waveHeight: 1.5,      // Increased from 0.8 for larger wave
+                waveFrequency: 0.3,   
                 wavelength: photonWavelength,
                 movementType: 'linear',
                 waveMode: 'partial'
             };
         
             // Create a grid of particles for the wave - increased size
-            const gridSize = 60;      // Increased from 20
-            const gridSpacing = 0.3;  // Increased from 0.1
+            const gridSize = 80;      // Increased from 60 for wider coverage
+            const gridSpacing = 0.3;  
             const totalParticles = gridSize * gridSize;
             
             // Create geometry for wave particles - increased size
-            const waveParticleGeometry = new THREE.SphereGeometry(0.15, 8, 6); // Increased from 0.03
+            const waveParticleGeometry = new THREE.SphereGeometry(0.15, 8, 6);
             const waveParticleMaterial = new THREE.MeshStandardMaterial({ 
                 color: 0x00ffff,
                 emissive: 0x003333,
@@ -412,6 +427,11 @@
             );
             waveParticles.visible = false;
             scene.add(waveParticles);
+            
+            // Initialize instance colors
+            waveParticles.instanceColor = new THREE.InstancedBufferAttribute(
+                new Float32Array(totalParticles * 3), 3
+            );
             
             // Create dummy for positioning
             const dummy = new THREE.Object3D();
@@ -432,6 +452,7 @@
                 }
             }
             waveParticles.instanceMatrix.needsUpdate = true;
+            waveParticles.instanceColor.needsUpdate = true;
             
             // Wave animation variables
             let waveActive = false;
@@ -463,10 +484,20 @@
             function emitWave() {
                 if (waveActive) return; // Don't emit if a wave is already active
                 
+                // Make wave visible immediately
+                waveParticles.visible = true;
+                
+                // Set wave active state immediately
                 waveActive = true;
                 waveTime = 0;
-                wavePosition = 10; // Start position further to the right (was 5)
-                waveParticles.visible = true; // Make particles visible
+                
+                // Start position closer to the atom for faster appearance
+                wavePosition = 10; // Reduced from 20 to make it appear faster
+                
+                // Calculate and update photon energy based on current wavelength
+                const energy = calculatePhotonEnergy(photonWavelength);
+                document.getElementById('photonEnergyDisplay').textContent = 
+                    `Photon Energy: ${energy.eV.toFixed(2)} eV`;
                 
                 // Update wave color based on photon wavelength
                 // Simple mapping: lower wavelength (higher energy) = blue, higher wavelength = red
@@ -480,12 +511,30 @@
     function updateWave(deltaTime) {
         if (!waveActive) return;
         
+        // Get current values from sliders if they exist
+        if (document.getElementById('waveSpeedSlider')) {
+            waveConfig.waveSpeed = parseFloat(document.getElementById('waveSpeedSlider').value);
+        }
+        if (document.getElementById('wavelengthSlider')) {
+            photonWavelength = parseFloat(document.getElementById('wavelengthSlider').value);
+            waveConfig.wavelength = photonWavelength;
+            
+            // Update energy display when wavelength changes
+            const energy = calculatePhotonEnergy(photonWavelength);
+            document.getElementById('photonEnergyDisplay').textContent = 
+                `Photon Energy: ${energy.eV.toFixed(2)} eV`;
+        }
+        if (document.getElementById('waveHeightSlider')) {
+            waveConfig.waveHeight = parseFloat(document.getElementById('waveHeightSlider').value);
+        }
+        
         // Update time and position - moving left (negative direction)
-        waveTime += deltaTime * waveConfig.waveSpeed * 0.5;
-        wavePosition -= deltaTime * waveConfig.waveSpeed * 1.0;
+        // Increase speed for faster initial appearance
+        waveTime += deltaTime * waveConfig.waveSpeed * 0.5; // Increased from 0.3
+        wavePosition -= deltaTime * waveConfig.waveSpeed * 1.2; // Increased from 0.8
         
         // If wave has moved past the atom, hide it
-        if (wavePosition < -10) { // Extended distance
+        if (wavePosition < -10) { // Reduced distance for faster reset
             waveActive = false;
             waveParticles.visible = false;
             return;
@@ -506,8 +555,9 @@
                 const distanceFromCenter = Math.sqrt(dx * dx + dz * dz);
                 
                 // Define the active wave radius and larger visible radius
-                const waveRadius = 4.0;
-                const visibleRadius = 8.0; // Increased for smoother transition
+                // Scale based on photon wavelength for realistic proportions
+                const waveRadius = 6.0 * photonWavelength;
+                const visibleRadius = 12.0 * photonWavelength; // Wider visible area
                 
                 // Calculate wave effect
                 let height = 0;
@@ -518,19 +568,39 @@
                     // This creates a gradual fade in/out effect
                     const fadeFactor = 1.0 - (distanceFromCenter / visibleRadius);
                     
-                    // Apply a smooth curve to the fade factor
-                    const smoothFade = Math.pow(fadeFactor, 3);
-                    opacity = smoothFade * 0.2; // Base opacity for stationary particles
+                    // Apply a smoother curve to the fade factor (quintic)
+                    const smoothFade = Math.pow(fadeFactor, 5); // Increased power for smoother transition
+                    opacity = smoothFade * 0.1; // Lower base opacity for stationary particles
                     
                     if (distanceFromCenter < waveRadius) {
                         // Calculate wave height using a smooth bell curve
                         const normalizedDist = distanceFromCenter / waveRadius;
                         
                         // Bell curve formula: e^(-x²)
-                        height = waveConfig.waveHeight * Math.exp(-normalizedDist * normalizedDist * 2.0);
+                        height = waveConfig.waveHeight * photonWavelength * Math.exp(-normalizedDist * normalizedDist * 1.2);
                         
                         // Calculate opacity based on height (higher = more visible)
-                        opacity = Math.min(0.2 + height / waveConfig.waveHeight * 0.8, 1.0);
+                        // Use a smoother transition function
+                        const heightFactor = height / (waveConfig.waveHeight * photonWavelength);
+                        opacity = Math.min(0.1 + heightFactor * 0.9, 1.0);
+                        
+                        // Apply additional smoothing to opacity
+                        opacity = Math.pow(opacity, 0.6);
+                        
+                        // Apply color gradient based on height/amplitude
+                        // Get the base color for the current photon wavelength
+                        const baseHue = Math.max(0, Math.min(240, 240 * (1 - photonWavelength / 2)));
+                        
+                        // Adjust saturation and lightness based on height
+                        // Higher amplitude = more saturated and brighter
+                        const saturation = 0.5 + heightFactor * 0.5; // 0.5 to 1.0
+                        const lightness = 0.3 + heightFactor * 0.4;  // 0.3 to 0.7
+                        
+                        // Create a color for this specific particle
+                        const particleColor = new THREE.Color().setHSL(baseHue/360, saturation, lightness);
+                        
+                        // Set the color for this instance
+                        waveParticles.setColorAt(index, particleColor);
                     }
                 }
                 
@@ -547,17 +617,88 @@
         }
         
         waveParticles.instanceMatrix.needsUpdate = true;
+        waveParticles.instanceColor.needsUpdate = true;
     }
+            
+            // Function to calculate photon energy
+            function calculatePhotonEnergy(wavelength) {
+                // E = hc/λ where h is Planck's constant, c is speed of light, λ is wavelength
+                const h = 6.62607015e-34; // Planck's constant in J·s
+                const c = 299792458; // Speed of light in m/s
+                
+                // Convert wavelength from nm to m
+                const wavelengthInMeters = wavelength * 1e-9;
+                
+                // Calculate energy in Joules
+                const energyInJoules = (h * c) / wavelengthInMeters;
+                
+                // Convert to electron volts (more common unit for photon energy)
+                const energyInEV = energyInJoules / 1.602176634e-19;
+                
+                return {
+                    joules: energyInJoules,
+                    eV: energyInEV
+                };
+            }
             
             // Connect sliders to update the wave config
             const waveSpeedSlider = document.getElementById('waveSpeedSlider');
             const waveHeightSlider = document.getElementById('waveHeightSlider');
-            const waveFrequencySlider = document.getElementById('waveFrequencySlider');
-
+            const wavelengthSlider = document.getElementById('wavelengthSlider');
+            
+            // Set default values (increased speed)
+            waveSpeed = 1.5; // Increased from 1.0
+            waveHeight = 0.8;
+            waveFrequency = 0.3;
+            
             // Initialize with default values
             if (waveSpeedSlider) waveSpeedSlider.value = waveConfig.waveSpeed;
             if (waveHeightSlider) waveHeightSlider.value = waveConfig.waveHeight;
-            if (waveFrequencySlider) waveFrequencySlider.value = waveConfig.waveFrequency;
+            if (wavelengthSlider) wavelengthSlider.value = photonWavelength;
+            
+            // Initialize energy display with default wavelength
+            const initialEnergy = calculatePhotonEnergy(photonWavelength);
+            document.getElementById('photonEnergyDisplay').textContent = 
+                `Photon Energy: ${initialEnergy.eV.toFixed(1)} eV`;
+            
+            // Pre-initialize wave positions for faster first appearance
+            for (let i = 0; i < gridSize; i++) {
+                for (let j = 0; j < gridSize; j++) {
+                    const index = i * gridSize + j;
+                    
+                    // Position in a grid on the x-z plane
+                    const x = (i - gridSize/2) * gridSpacing;
+                    const z = (j - gridSize/2) * gridSpacing;
+                    const y = 0; // Y position at center level
+                    
+                    dummy.position.set(x, y, z + 10); // Pre-position closer to atom
+                    dummy.updateMatrix();
+                    waveParticles.setMatrixAt(index, dummy.matrix);
+                }
+            }
+            waveParticles.instanceMatrix.needsUpdate = true;
+            
+            // Add event listeners for wave controls
+            waveSpeedSlider.addEventListener('input', (event) => {
+                waveSpeed = parseFloat(event.target.value);
+            });
+            
+            waveHeightSlider.addEventListener('input', (event) => {
+                waveHeight = parseFloat(event.target.value);
+            });
+            
+            wavelengthSlider.addEventListener('input', (event) => {
+                photonWavelength = parseFloat(event.target.value);
+                waveConfig.wavelength = photonWavelength;
+                
+                // Update wavelength display
+                document.getElementById('currentWavelength').textContent = photonWavelength.toFixed(1) + ' nm';
+                
+                // Update energy display when wavelength changes
+                const energy = calculatePhotonEnergy(photonWavelength);
+                document.getElementById('photonEnergyDisplay').textContent = 
+                    `Photon Energy: ${energy.eV.toFixed(1)} eV`;
+            });
 
             // Connect to the emit button
             const emitButton = document.getElementById('emitWaveBtn');
@@ -568,6 +709,21 @@
                 window.addEventListener('DOMContentLoaded', () => {
                     const btn = document.getElementById('emitWaveBtn');
                     if (btn) btn.addEventListener('click', emitWave);
+                });
+            }
+            
+            // Add event listener for the emit wave button
+            const emitWaveBtn = document.getElementById('emitWaveBtn');
+            if (emitWaveBtn) {
+                emitWaveBtn.addEventListener('click', () => {
+                    // Remove existing photon wave if any
+                    if (photonWave) {
+                        scene.remove(photonWave);
+                    }
+                    
+                    // Create new photon wave with current settings
+                    photonWave = createPhotonWave(waveHeight, waveFrequency);
+                    scene.add(photonWave);
                 });
             }
             
@@ -671,13 +827,30 @@
                     updatePhotonWave(deltaTime);
                 }
 
+                // Update time for wave animation
+                time += 0.01 * waveSpeed;
+                
                 // Update uniforms for all orbital materials
-                const time = performance.now() * 0.001; // Convert to seconds
                 for (const type in orbitalGroups) {
                     if (orbitalGroups[type].material && orbitalGroups[type].material.uniforms) {
                         orbitalGroups[type].material.uniforms.u_time.value = time;
                         orbitalGroups[type].material.uniforms.viewMatrix.value = camera.matrixWorldInverse;
+                        
+                        // Add wave height and frequency parameters
+                        if (orbitalGroups[type].material.uniforms.u_waveHeight) {
+                            orbitalGroups[type].material.uniforms.u_waveHeight.value = waveHeight;
+                        }
+                        if (orbitalGroups[type].material.uniforms.u_waveFrequency) {
+                            orbitalGroups[type].material.uniforms.u_waveFrequency.value = waveFrequency;
+                        }
                     }
+                }
+                
+                // Update photon wave if it exists
+                if (photonWave && photonWave.material.uniforms) {
+                    photonWave.material.uniforms.time.value = time;
+                    photonWave.material.uniforms.waveHeight.value = waveHeight;
+                    photonWave.material.uniforms.waveFrequency.value = waveFrequency;
                 }
                 
                 controls.update();
@@ -1012,11 +1185,13 @@
                     directionalLightDirection2: { value: scene.userData.directionalLight2.direction },
                     orbitalScale: { value: scale },
                     u_time: { value: 0.0 },
-                    u_maxSpeedAtCenter: { value: 30.0 },
-                    u_minSpeedAtEdge: { value: 0.02 },
+                    u_maxSpeedAtCenter: { value: 50.0 },
+                    u_minSpeedAtEdge: { value: 0.01 },
                     u_exponentialFalloffRate: { value: 3.5 },
                     u_crossSectionX: { value: 10.0 }, // Default to showing full orbital
-                    viewMatrix: { value: camera.matrixWorldInverse }
+                    viewMatrix: { value: camera.matrixWorldInverse },
+                    u_waveHeight: { value: waveHeight },
+                    u_waveFrequency: { value: waveFrequency }
                 }
             });
             
